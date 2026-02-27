@@ -11,13 +11,29 @@
         .card { background: #1e293b; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
         .stat-value { font-size: 2rem; font-weight: bold; }
         .log-container { height: 250px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.85rem; }
+        /* Custom Toggle Style */
+        .toggle-bg:after { content: ''; position: absolute; top: 2px; left: 2px; background: white; border-radius: 99px; height: 20px; width: 20px; transition: 0.3s; }
+        input:checked + .toggle-bg:after { transform: translateX(24px); }
+        input:checked + .toggle-bg { background-color: #3b82f6; }
     </style>
 </head>
 <body class="p-4 md:p-8">
     <div class="max-w-6xl mx-auto">
-        <header class="mb-8">
-            <h1 class="text-3xl font-bold text-blue-400">ESP32 <span class="text-white">Online Dashboard</span></h1>
-            <p class="text-slate-400 text-sm">Data from my room in Trondheim</p>
+        <header class="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
+            <div>
+                <h1 class="text-3xl font-bold text-blue-400">ESP32 <span class="text-white">Online Dashboard</span></h1>
+                <p class="text-slate-400 text-sm">Data from my room in Trondheim</p>
+            </div>
+            
+            <div class="flex items-center gap-3 bg-slate-800/50 p-3 rounded-lg border border-slate-700">
+                <span class="text-xs font-bold uppercase tracking-wider text-slate-400">View:</span>
+                <span class="text-sm">Recent</span>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="dataToggle" class="sr-only" onchange="toggleDataView()">
+                    <div class="toggle-bg w-12 h-6 bg-slate-600 rounded-full relative"></div>
+                </label>
+                <span class="text-sm">Full History</span>
+            </div>
         </header>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
@@ -52,6 +68,8 @@
 <script>
 // --- CONFIGURATION ---
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyhksaPP6mFG8OANWqybPI3RR1x2eXPVfcr4RRDALfkpjudpBLeXSBnjO7DDeqoLLVs/exec";
+let showFullData = false;
+let cachedData = []; // Store data locally to make toggling instant
 
 const createChart = (ctx, label, color) => {
     return new Chart(ctx, {
@@ -62,9 +80,9 @@ const createChart = (ctx, label, color) => {
             borderColor: color, 
             backgroundColor: color + '15',
             fill: true,
-            tension: 0.3,
+            tension: 0.2, // Slightly reduced tension for better performance with many points
             borderWidth: 2,
-            pointRadius: 3
+            pointRadius: (context) => showFullData ? 0 : 3 // Hide points in full view for clarity
         }]},
         options: {
             responsive: true,
@@ -72,7 +90,15 @@ const createChart = (ctx, label, color) => {
             animation: false,
             scales: {
                 y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
-                x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                x: { 
+                    grid: { display: false }, 
+                    ticks: { 
+                        color: '#94a3b8',
+                        maxRotation: 0,
+                        autoSkip: true,
+                        maxTicksLimit: 10
+                    } 
+                }
             },
             plugins: { legend: { labels: { color: '#94a3b8' } } }
         }
@@ -83,46 +109,53 @@ const tempChart = createChart(document.getElementById('tempChart'), 'Temperatura
 const humChart = createChart(document.getElementById('humChart'), 'Umidità (%)', '#60a5fa');
 const pressureChart = createChart(document.getElementById('pressureChart'), 'Pressione (hPa)', '#34d399');
 
+function toggleDataView() {
+    showFullData = document.getElementById('dataToggle').checked;
+    renderData(cachedData); // Re-render immediately without waiting for next fetch
+}
+
+function renderData(allData) {
+    if (!allData || allData.length === 0) return;
+
+    // Decide how much data to show
+    const displayData = showFullData ? allData : allData.slice(-50);
+    const latest = allData[allData.length - 1];
+
+    // Update Stat Cards
+    document.getElementById('curr-temp').innerText = latest.temp;
+    document.getElementById('curr-hum').innerText = latest.hum;
+    document.getElementById('curr-press').innerText = latest.pressure;
+
+    const labels = displayData.map(d => d.time);
+    
+    // Update Charts
+    const updateChartData = (chart, dataArr) => {
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = dataArr;
+        chart.update('none');
+    };
+
+    updateChartData(tempChart, displayData.map(d => d.temp));
+    updateChartData(humChart, displayData.map(d => d.hum));
+    updateChartData(pressureChart, displayData.map(d => d.pressure));
+
+    // Update Log (always show last 30 for readability)
+    const logDiv = document.getElementById('log');
+    logDiv.innerHTML = allData.slice().reverse().slice(0, 30).map(entry => 
+        `<div class="border-b border-slate-800 pb-1">
+            <span class="text-blue-500 font-bold">[${entry.time}]</span> 
+            T: <span class="text-red-400">${entry.temp}°</span> | 
+            H: <span class="text-blue-400">${entry.hum}%</span> | 
+            P: <span class="text-emerald-400">${entry.pressure}hPa</span>
+        </div>`
+    ).join('');
+}
+
 async function updateDashboard() {
     try {
         const response = await fetch(GOOGLE_SCRIPT_URL);
-        const allData = await response.json();
-        
-        if (!allData || allData.length === 0) return;
-
-        // Take last 50 points for the charts
-        const displayData = allData.slice(-50);
-        const latest = allData[allData.length - 1];
-
-        // Update Stat Cards
-        document.getElementById('curr-temp').innerText = latest.temp;
-        document.getElementById('curr-hum').innerText = latest.hum;
-        document.getElementById('curr-press').innerText = latest.pressure;
-
-        const labels = displayData.map(d => d.time);
-        
-        // Update Charts
-        const updateChart = (chart, dataArr) => {
-            chart.data.labels = labels;
-            chart.data.datasets[0].data = dataArr;
-            chart.update('none');
-        };
-
-        updateChart(tempChart, displayData.map(d => d.temp));
-        updateChart(humChart, displayData.map(d => d.hum));
-        updateChart(pressureChart, displayData.map(d => d.pressure));
-
-        // Update Log
-        const logDiv = document.getElementById('log');
-        logDiv.innerHTML = allData.slice().reverse().slice(0, 30).map(entry => 
-            `<div class="border-b border-slate-800 pb-1">
-                <span class="text-blue-500 font-bold">[${entry.time}]</span> 
-                T: <span class="text-red-400">${entry.temp}°</span> | 
-                H: <span class="text-blue-400">${entry.hum}%</span> | 
-                P: <span class="text-emerald-400">${entry.pressure}hPa</span>
-            </div>`
-        ).join('');
-
+        cachedData = await response.json();
+        renderData(cachedData);
     } catch (err) {
         console.error("Fetch Error:", err);
         document.getElementById('log').innerText = "Errore di connessione a Google Sheets...";
